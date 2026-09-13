@@ -183,8 +183,23 @@ func run(opt options) error {
 	looper.SetGroundingBackends(realNLI(), nil)
 
 	looperCfg := &config.LooperConfig{Endpoint: opt.endpoint}
-	client := looper.NewClient(looperCfg)
-	fusion := looper.NewFusionLooper(looperCfg)
+	client, err := looper.NewConnectorClient(looperCfg)
+	if err != nil {
+		return fmt.Errorf("create Looper client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+	fusionLooper, err := looper.FactoryWithClient(
+		looperCfg,
+		config.DecisionAlgorithmFusion,
+		client,
+	)
+	if err != nil {
+		return fmt.Errorf("create Fusion Looper: %w", err)
+	}
+	fusion, ok := fusionLooper.(*looper.FusionLooper)
+	if !ok {
+		return fmt.Errorf("fusion factory returned %T", fusionLooper)
+	}
 
 	// Phase 1: build (or resume) the panel cache — generate each panel ONCE.
 	cache, err := buildPanelCache(client, opt, items)
@@ -275,7 +290,12 @@ func generatePanel(client *looper.Client, opt options, it item) ([]cachedRespons
 	out := make([]cachedResponse, 0, len(opt.panelModels))
 	for _, model := range opt.panelModels {
 		req := buildRequest(it.Question, it.Context, opt)
-		resp, err := client.CallModel(context.Background(), req, model, false, 1, nil, "")
+		resp, err := client.CallModelWithOptions(
+			context.Background(),
+			*req,
+			looper.ModelTarget{Name: model},
+			looper.CallOptions{Iteration: 1},
+		)
 		if err != nil {
 			return nil, fmt.Errorf("model %q: %w", model, err)
 		}
@@ -341,7 +361,12 @@ func produceArm(
 
 	if arm == "A" {
 		req := buildRequest(it.Question, it.Context, opt)
-		resp, err := client.CallModel(context.Background(), req, opt.judge, false, 1, nil, "")
+		resp, err := client.CallModelWithOptions(
+			context.Background(),
+			*req,
+			looper.ModelTarget{Name: opt.judge},
+			looper.CallOptions{Iteration: 1},
+		)
 		if err != nil {
 			rec.Error = err.Error()
 			return rec
